@@ -2,167 +2,226 @@ import requests
 import json
 import subprocess
 import os
-import time
+import re
+import glob
+from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
-# ========== تنظیمات بهینه ==========
-GEMINI_API_KEY = "AQ.Ab8RN6LeFukS_hT6DuONe8rg36Ci0JNhOftjLLItyePKYPSrnA"
-# استفاده از بهینه‌ترین مدل برای لایه رایگان
-MODEL_NAME = "gemini-2.5-flash-lite"
+# ========== CONFIG ==========
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL_NAME = "gemini-1.5-flash"
 TOPIC = "چرا انسان‌ها به موسیقی نیاز دارند؟"
 
-def log_message(message, type="info"):
-    """چاپ پیام با فرمت مناسب"""
-    prefix = {"info": "📝", "success": "✅", "error": "❌", "warning": "⚠️"}.get(type, "📌")
-    print(f"{prefix} {message}")
+RUN_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUTPUT_DIR = f"output_{RUN_ID}"
 
-# دکوراتور retry برای مدیریت خودکار خطاهای 429 و 503
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+
+# ========== LOG ==========
+def log(msg):
+    print("📝", msg)
+
+
+# ========== CLEAN OLD RUNS (optional safe mode) ==========
+def clean_old_outputs(keep_last=3):
+    folders = sorted(glob.glob("output_*"))
+
+    if len(folders) <= keep_last:
+        return
+
+    for folder in folders[:-keep_last]:
+        try:
+            subprocess.run(["rm", "-rf", folder])
+            print(f"🧹 حذف شد: {folder}")
+        except:
+            pass
+
+
+# ========== GEMINI ==========
 @retry(
-    stop=stop_after_attempt(5),  # حداکثر 5 بار تلاش
-    wait=wait_exponential(multiplier=1, min=2, max=30),  # فاصله افزایشی: 2، 4، 8، 16، 30 ثانیه
-    retry=retry_if_exception(lambda e: isinstance(e, requests.exceptions.RequestException) and 
-                             e.response is not None and e.response.status_code in [429, 503]),
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(min=2, max=30),
+    retry=retry_if_exception(lambda e: isinstance(e, requests.exceptions.RequestException)),
     reraise=True
 )
-def call_gemini_api(prompt):
-    """ارسال درخواست به Gemini API با مدیریت خودکار خطا"""
+def gemini(prompt):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent"
-    
+
     headers = {
         "Content-Type": "application/json",
         "X-goog-api-key": GEMINI_API_KEY
     }
-    
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 1024
+            "maxOutputTokens": 1200
         }
     }
-    
-    log_message(f"ارسال درخواست به {MODEL_NAME}...")
-    response = requests.post(url, headers=headers, json=payload, timeout=60)
-    
-    if response.status_code == 200:
-        return response.json()
-    elif response.status_code in [429, 503]:
-        log_message(f"خطای {response.status_code}: ازدحام سرور. تلاش مجدد...", "warning")
-        response.raise_for_status()
-    else:
-        log_message(f"خطای ناشناخته {response.status_code}: {response.text}", "error")
-        response.raise_for_status()
 
-def get_script_from_gemini(topic):
-    """گرفتن فیلمنامه با مدیریت خطا"""
-    prompt = f"""یک فیلمنامه کوتاه ۳۰ ثانیه‌ای برای یوتیوب شورت درباره '{topic}' بنویس.
-    فیلمنامه را به ۳ بخش (صحنه) تقسیم کن. هر بخش شامل:
-    1. متن گفتار (حداکثر ۱۵ کلمه)
-    2. توضیح صحنه برای ساخت تصویر
-    
-    خروجی دقیقاً به این فرمت JSON باشه (فقط همین JSON):
-    {{"scenes": [
-        {{"text": "متن گفتار صحنه ۱", "image_prompt": "توضیح صحنه ۱"}},
-        {{"text": "متن گفتار صحنه ۲", "image_prompt": "توضیح صحنه ۲"}},
-        {{"text": "متن گفتار صحنه ۳", "image_prompt": "توضیح صحنه ۳"}}
-    ]}}
-    """
-    
-    try:
-        result = call_gemini_api(prompt)
-        
-        if "candidates" not in result or not result["candidates"]:
-            log_message("پاسخ API فاقد محتوای معتبر است", "error")
-            return None
-            
-        raw_text = result["candidates"][0]["content"]["parts"][0]["text"]
-        clean_json = raw_text.replace("```json", "").replace("```", "").strip()
-        return json.loads(clean_json)
-        
-    except requests.exceptions.RequestException as e:
-        log_message(f"خطا در ارتباط با API: {e}", "error")
-        return None
-    except json.JSONDecodeError as e:
-        log_message(f"خطا در پردازش JSON: {e}", "error")
-        return None
-    except Exception as e:
-        log_message(f"خطای پیش‌بینی‌نشده: {e}", "error")
-        return None
+    r = requests.post(url, headers=headers, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()
 
-def generate_image(prompt, scene_num):
-    """ساخت تصویر با Pollinations AI"""
+
+def extract_json(text):
+    match = re.search(r'\{.*\}', text, re.S)
+    if not match:
+        raise ValueError("JSON not found")
+    return json.loads(match.group())
+
+
+def get_script(topic):
+    prompt = f"""
+یک ویدیو 30 ثانیه‌ای درباره "{topic}" بساز.
+3 صحنه.
+
+فقط JSON:
+{{
+"scenes":[
+{{"text":"کوتاه و جذاب","image_prompt":"تصویر سینمایی"}},
+{{"text":"کوتاه و جذاب","image_prompt":"تصویر سینمایی"}},
+{{"text":"کوتاه و جذاب","image_prompt":"تصویر سینمایی"}}
+]
+}}
+"""
+
+    res = gemini(prompt)
+    txt = res["candidates"][0]["content"]["parts"][0]["text"]
+
+    txt = txt.replace("```json","").replace("```","").strip()
+    return extract_json(txt)
+
+
+# ========== IMAGE ==========
+def make_image(prompt, i):
     url = f"https://image.pollinations.ai/prompt/{requests.utils.quote(prompt)}"
-    response = requests.get(url)
-    filename = f"scene_{scene_num}.jpg"
-    with open(filename, "wb") as f:
-        f.write(response.content)
-    return filename
+    r = requests.get(url, timeout=60)
+    r.raise_for_status()
 
-def generate_audio(text, scene_num):
-    """ساخت صدا با استفاده از edge-tts"""
-    filename = f"audio_{scene_num}.mp3"
+    file_path = os.path.join(OUTPUT_DIR, f"img_{i}.jpg")
+
+    with open(file_path, "wb") as f:
+        f.write(r.content)
+
+    return file_path
+
+
+# ========== AUDIO ==========
+def make_audio(text, i):
+    file_path = os.path.join(OUTPUT_DIR, f"audio_{i}.mp3")
+
     try:
-        subprocess.run(["edge-tts", "--text", text, "--voice", "ir-IR-DilaraNeural", "--write-media", filename], 
-                      check=True, capture_output=True)
-        log_message(f"صدای صحنه {scene_num} ساخته شد", "success")
+        subprocess.run([
+            "edge-tts",
+            "--text", text,
+            "--voice", "en-US-AriaNeural",
+            "--write-media", file_path
+        ], check=True)
+
     except:
-        log_message(f"عدم دسترسی به edge-tts، استفاده از صدای پیش‌فرض", "warning")
-        subprocess.run(["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", filename], capture_output=True)
-    return filename
+        subprocess.run([
+            "ffmpeg","-y",
+            "-f","lavfi",
+            "-i","sine=frequency=500:duration=3",
+            file_path
+        ])
 
-def create_video(image_files, audio_files, output_name="final_video.mp4"):
-    """ترکیب تصاویر و صداها با FFmpeg"""
-    with open("concat_list.txt", "w") as f:
-        for img, aud in zip(image_files, audio_files):
-            try:
-                result = subprocess.run(["ffprobe", "-i", aud, "-show_entries", "format=duration", 
-                                       "-v", "quiet", "-of", "csv=%s"], capture_output=True, text=True)
-                duration = result.stdout.strip()
-                if not duration or float(duration) <= 0:
-                    duration = "3"
-            except:
-                duration = "3"
-            f.write(f"file '{img}'\n")
-            f.write(f"duration {duration}\n")
-    
+    return file_path
+
+
+# ========== CLIP ==========
+def make_clip(img, aud, i):
+    out = os.path.join(OUTPUT_DIR, f"clip_{i}.mp4")
+
     subprocess.run([
-        "ffmpeg", "-f", "concat", "-safe", "0", "-i", "concat_list.txt",
-        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p", output_name
-    ], capture_output=True)
-    return output_name
+        "ffmpeg","-y",
+        "-loop","1",
+        "-i", img,
+        "-i", aud,
+        "-vf","scale=1080:1920,format=yuv420p",
+        "-c:v","libx264",
+        "-c:a","aac",
+        "-shortest",
+        out
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    return out
+
+
+# ========== CONCAT ==========
+def concat_clips(clips):
+    list_file = os.path.join(OUTPUT_DIR, "list.txt")
+
+    with open(list_file, "w") as f:
+        for c in clips:
+            f.write(f"file '{c}'\n")
+
+    output = os.path.join(OUTPUT_DIR, "temp.mp4")
+
+    subprocess.run([
+        "ffmpeg","-y",
+        "-f","concat",
+        "-safe","0",
+        "-i", list_file,
+        "-c","copy",
+        output
+    ])
+
+    return output
+
+
+# ========== FINAL ==========
+def finalize(video):
+    out = os.path.join(OUTPUT_DIR, "final_short.mp4")
+
+    music = "music.mp3"
+
+    if not os.path.exists(music):
+        subprocess.run([
+            "ffmpeg","-y",
+            "-f","lavfi",
+            "-i","sine=frequency=0:duration=10",
+            music
+        ])
+
+    subprocess.run([
+        "ffmpeg","-y",
+        "-i", video,
+        "-i", music,
+        "-filter_complex",
+        "[1:a]volume=0.08[a1];[0:a][a1]amix=inputs=2:duration=first",
+        "-c:v","copy",
+        "-c:a","aac",
+        out
+    ])
+
+    return out
+
+
+# ========== MAIN ==========
 if __name__ == "__main__":
-    log_message(f"شروع ساخت ویدیو با مدل {MODEL_NAME}")
-    log_message(f"گرفتن فیلمنامه از Gemini API...")
-    
-    script = get_script_from_gemini(TOPIC)
-    
-    if script is None:
-        log_message("خطا در دریافت فیلمنامه، خروج از برنامه", "error")
-        exit(1)
-    
-    log_message("فیلمنامه با موفقیت دریافت شد", "success")
-    
-    images = []
-    audios = []
-    
-    for i, scene in enumerate(script["scenes"]):
-        log_message(f"ساخت صحنه {i+1} از {len(script['scenes'])}")
-        
-        log_message(f"ساخت تصویر برای: {scene['image_prompt'][:50]}...")
-        img = generate_image(scene["image_prompt"], i+1)
-        images.append(img)
-        
-        log_message(f"ساخت صدا برای: {scene['text'][:50]}...")
-        aud = generate_audio(scene["text"], i+1)
-        audios.append(aud)
-    
-    log_message("ترکیب نهایی ویدیو...")
-    video_file = create_video(images, audios)
-    
-    log_message(f"ویدیو با موفقیت ساخته شد: {video_file}", "success")
-    log_message("فایل‌های ساخته شده:", "info")
-    for file in images + audios + [video_file]:
-        if os.path.exists(file):
-            size = os.path.getsize(file) / 1024
-            log_message(f"  - {file} ({size:.1f} KB)", "info")
+    log(f"شروع اجرا: {RUN_ID}")
+
+    clean_old_outputs()
+
+    script = get_script(TOPIC)
+
+    clips = []
+
+    for i, scene in enumerate(script["scenes"], 1):
+        log(f"صحنه {i}")
+
+        img = make_image(scene["image_prompt"], i)
+        aud = make_audio(scene["text"], i)
+
+        clip = make_clip(img, aud, i)
+        clips.append(clip)
+
+    video = concat_clips(clips)
+    final = finalize(video)
+
+    log(f"ویدیو ساخته شد: {final}")
+    log(f"پوشه خروجی: {OUTPUT_DIR}")
