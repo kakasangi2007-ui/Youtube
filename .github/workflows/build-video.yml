@@ -1,47 +1,82 @@
-name: Build YouTube Video
+name: Build YouTube Short
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # اجرا با دکمه (دستی)
   schedule:
-    - cron: '0 0 * * 0'
-
-permissions:
-  contents: write
+    - cron: '0 */6 * * *'  # هر 6 ساعت یکبار خودکار اجرا بشه (اختیاری)
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      # 🔥 مهم‌ترین بخش (حل خطای 401)
-      - name: Run video maker
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python video_maker.py
-
-      - name: Commit and push video
-        run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-
-          git add output_* final_video.mp4 *.jpg *.mp3 2>/dev/null || true
-
-          git diff --cached --quiet && echo "No changes to commit" || git commit -m "Add generated video [skip ci]"
-
-          git push
+    # 1. دریافت کدهای مخزن
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    # 2. نصب Python
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    # 3. نصب FFmpeg (برای ساخت ویدیو)
+    - name: Install FFmpeg
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+    
+    # 4. نصب کتابخانه‌های پایتون
+    - name: Install Python dependencies
+      run: |
+        pip install --upgrade pip
+        pip install requests tenacity edge-tts
+    
+    # 5. اجرای اسکریپت اصلی
+    - name: Run video maker
+      run: python video_maker.py
+    
+    # 6. پیدا کردن آخرین پوشه خروجی
+    - name: Find output folder
+      id: find_output
+      run: |
+        # جدیدترین پوشه output_* رو پیدا کن
+        LATEST_OUTPUT=$(ls -td output_*/ | head -1)
+        echo "output_dir=${LATEST_OUTPUT}" >> $GITHUB_OUTPUT
+        echo "پوشه خروجی: ${LATEST_OUTPUT}"
+    
+    # 7. آپلود ویدیو به عنوان Artifact (قابل دانلود)
+    - name: Upload video to GitHub
+      uses: actions/upload-artifact@v4
+      with:
+        name: youtube-short-video
+        path: ${{ steps.find_output.outputs.output_dir }}/final_short.mp4
+        retention-days: 7  # ویدیو به مدت 7 روز در گیت‌هاب نگهداری میشه
+    
+    # 8. (اختیاری) آپلود کل پوشه خروجی برای دیباگ
+    - name: Upload full output folder (debug)
+      if: always()  # حتی اگر خطا هم بیاد، این مرحله اجرا بشه
+      uses: actions/upload-artifact@v4
+      with:
+        name: full-output-${{ github.run_id }}
+        path: output_*/
+        retention-days: 3
+    
+    # 9. Commit و Push ویدیو به مخزن (اختیاری)
+    - name: Commit and push video to repo
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # پیدا کردن آخرین ویدیو
+        VIDEO_FILE=$(ls -t output_*/final_short.mp4 | head -1)
+        
+        if [ -f "$VIDEO_FILE" ]; then
+          # کپی ویدیو به ریشه مخزن
+          cp "$VIDEO_FILE" ./latest_video.mp4
+          git add latest_video.mp4
+          git diff --staged --quiet || git commit -m "Auto-update latest video [skip ci]"
+          git push || echo "خطا در push (شاید دسترسی کافی نباشد)"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
