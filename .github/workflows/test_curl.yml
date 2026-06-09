@@ -1,0 +1,26 @@
+name: Ultimate Curl Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  curl-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Gemini API with raw curl
+        run: |
+          curl -v "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent" \
+            -H "x-goog-api-key: AQ.Ab8RN6LYeHoRBstrchXminjQYiv9lI85SPdFY4-hh98ATdzO6g" \
+            -H 'Content-Type: application/json' \
+            -X POST \
+            -d '{
+              "contents": [
+                {
+                  "parts": [
+                    {
+                      "text": "Say exactly: Hello World"
+                    }
+                  ]
+                }
+              ]
+            }'
