@@ -8,7 +8,7 @@ from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 # ========== CONFIG ==========
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY = "AQ.Ab8RN6LeFukS_hT6DuONe8rg36Ci0JNhOftjLLItyePKYPSrnA"  # کلید جدید شما
 MODEL_NAME = "gemini-1.5-flash"
 TOPIC = "چرا انسان‌ها به موسیقی نیاز دارند؟"
 
@@ -117,7 +117,7 @@ def make_audio(text, i):
         subprocess.run([
             "edge-tts",
             "--text", text,
-            "--voice", "en-US-AriaNeural",
+            "--voice", "ir-IR-DilaraNeural",  # صدای فارسی بهتر
             "--write-media", file_path
         ], check=True)
 
@@ -212,7 +212,8 @@ if __name__ == "__main__":
     clips = []
 
     for i, scene in enumerate(script["scenes"], 1):
-        log(f"صحنه {i}")
+        log(f"صحنه {i}: {scene['text'][:40]}...")
+        log(f"   تصویر: {scene['image_prompt'][:40]}...")
 
         img = make_image(scene["image_prompt"], i)
         aud = make_audio(scene["text"], i)
@@ -223,5 +224,9 @@ if __name__ == "__main__":
     video = concat_clips(clips)
     final = finalize(video)
 
-    log(f"ویدیو ساخته شد: {final}")
-    log(f"پوشه خروجی: {OUTPUT_DIR}")
+    log(f"✅ ویدیو ساخته شد: {final}")
+    log(f"📁 پوشه خروجی: {OUTPUT_DIR}")
+    
+    # نمایش اطلاعات فایل
+    file_size = os.path.getsize(final) / (1024 * 1024)
+    log(f"📊 حجم فایل: {file_size:.2f} MB")
