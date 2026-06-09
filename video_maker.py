@@ -4,7 +4,7 @@ import subprocess
 import os
 import base64
 
-GEMINI_API_KEY = "AQ.Ab8RN6LYeHoRBstrchXminjQYiv9lI85SPdFY4-hh98ATdzO6g"
+GEMINI_API_KEY = "AQ.Ab8RN6LeFukS_hT6DuONe8rg36Ci0JNhOftjLLItyePKYPSrnA"
 TOPIC = "چرا انسان‌ها به موسیقی نیاز دارند؟"
 
 def get_script_from_gemini(topic):
